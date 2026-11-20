@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#2f6b3a">
+  <title>菜園ノート</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header><h1>🌱 菜園ノート</h1></header>
+  <main id="view"></main>
+
+  <nav aria-label="メニュー">
+    <button data-tab="home"><span>🏡</span>ホーム</button>
+    <button data-tab="crops"><span>🥬</span>作物</button>
+    <button data-tab="logs"><span>📝</span>記録</button>
+    <button data-tab="tasks"><span>📅</span>予定</button>
+    <button data-tab="summary"><span>🧺</span>収穫</button>
+  </nav>
+
+  <dialog id="dialog">
+    <form id="dialog-form">
+      <h2 id="dialog-title"></h2>
+      <div id="dialog-fields"></div>
+      <div class="dialog-actions">
+        <button type="button" class="btn danger" id="dialog-delete">削除</button>
+        <span class="grow"></span>
+        <button type="button" class="btn ghost" id="dialog-cancel">キャンセル</button>
+        <button type="submit" class="btn primary">保存</button>
+      </div>
+    </form>
+  </dialog>
+  <input type="file" id="import-file" accept="application/json,.json" hidden>
+
+  <script src="logic.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
