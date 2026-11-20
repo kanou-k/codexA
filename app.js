@@ -15,9 +15,9 @@
   function load() {
     try {
       const s = JSON.parse(localStorage.getItem(KEY));
-      if (L.isValidState(s)) return s;
+      if (L.isValidState(s)) return L.normalizeState(s);
     } catch (e) { /* 壊れたデータは無視して空で始める */ }
-    return { crops: [], logs: [], tasks: [] };
+    return L.normalizeState({ crops: [], logs: [], tasks: [] });
   }
   function save() {
     try {
@@ -81,8 +81,9 @@
         const days = c.plantedOn ? L.daysBetween(c.plantedOn, today) : null;
         const left = c.harvestOn ? L.daysBetween(today, c.harvestOn) : null;
         const water = L.lastLogDate(state.logs, c.id, '水やり');
+        const loc = L.cropLocation(c, state.planters);
         const meta = [
-          c.bed && `場所：${esc(c.bed)}`,
+          loc && `場所：${esc(loc)}`,
           c.plantedOn && `${esc(c.kind || '植え付け')} ${fmtDate(c.plantedOn)}（${days}日目）`,
           left !== null && !c.ended && (left > 0 ? `収穫目安まで${left}日` : '収穫期'),
           water && `水やり ${fmtDate(water)}`,
@@ -103,6 +104,36 @@
             </div>
           </li>`;
       }).join('')}</ul>` : empty('まだ作物がありません。「作物を追加」から登録しましょう。')}`;
+  }
+
+  const SIDES = { top: '上', left: '左', right: '右', bottom: '下' };
+  function viewPlot() {
+    const occ = L.occupancy(state.crops);
+    const { rows, cols } = state.garden;
+    // 登録順に色相を黄金角ずつずらし、隣り合う作物の色が似ないようにする
+    const hueOf = (c) => Math.round((state.crops.indexOf(c) * 137.5 + 100) % 360);
+    const tile = (key, label, cls) => {
+      const c = occ.get(key);
+      return `<button class="${cls}${c ? ' filled' : ''}" data-act="spot" data-key="${key}" ${c ? `style="--h:${hueOf(c)}"` : ''}
+        aria-label="${esc(label)}${c ? `：${esc(c.name)}` : '（空き）'}">${cls === 'planter' ? `<small>${esc(label)}</small>` : ''}<span>${c ? esc(c.name) : cls === 'planter' ? '空き' : ''}</span></button>`;
+    };
+    let cells = '';
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) cells += tile(L.fieldKey(r, c), `畑${r + 1}-${c + 1}`, 'cell');
+    const zone = (side) => `<div class="zone ${side}">${state.planters.filter((p) => (SIDES[p.side] ? p.side : 'bottom') === side)
+      .map((p) => tile(L.planterKey(p.id), p.name, 'planter')).join('')}</div>`;
+    return `
+      <p class="hint">マスやプランターをタップして、植えた作物を記録します。</p>
+      <div class="plot">
+        ${zone('top')}${zone('left')}
+        <div class="field" style="grid-template-columns:repeat(${cols},1fr)">${cells}</div>
+        ${zone('right')}${zone('bottom')}
+      </div>
+      <div class="actions">
+        <button class="btn" data-act="planter-new">＋ プランターを置く</button>
+        <button class="btn ghost" data-act="garden-size">畑の大きさ（${rows}×${cols}）</button>
+      </div>
+      ${state.planters.length ? `<section><h2>プランター <small>タップで名前・位置を変更</small></h2>
+        <div class="chips">${state.planters.map((p) => `<button class="chip" data-act="planter-edit" data-id="${p.id}">${esc(p.name)}（畑の${SIDES[p.side] || '下'}）</button>`).join('')}</div></section>` : ''}`;
   }
 
   function viewLogs() {
@@ -165,7 +196,7 @@
       </section>`;
   }
 
-  const VIEWS = { home: viewHome, crops: viewCrops, logs: viewLogs, tasks: viewTasks, summary: viewSummary };
+  const VIEWS = { home: viewHome, plot: viewPlot, crops: viewCrops, logs: viewLogs, tasks: viewTasks, summary: viewSummary };
   function render() {
     $('#view').innerHTML = VIEWS[tab]();
     document.querySelectorAll('nav button').forEach((b) => b.setAttribute('aria-current', b.dataset.tab === tab ? 'page' : 'false'));
@@ -179,12 +210,15 @@
     $('#dialog-title').textContent = title;
     $('#dialog-fields').innerHTML = html;
     $('#dialog-delete').hidden = !del;
+    $('#dialog-submit').hidden = !submit;
+    $('#dialog-cancel').textContent = submit ? 'キャンセル' : '閉じる';
     onSubmit = submit;
     onDelete = del || null;
     dlg.showModal();
   }
   $('#dialog-form').addEventListener('submit', (e) => {
     e.preventDefault();
+    if (!onSubmit) return dlg.close();
     const data = Object.fromEntries(new FormData(e.target));
     for (const k of Object.keys(data)) if (typeof data[k] === 'string') data[k] = data[k].trim();
     onSubmit(data);
@@ -204,14 +238,14 @@
       .filter((c) => includeEnded || !c.ended || c.id === selected)
       .map((c) => `<option value="${c.id}" ${c.id === selected ? 'selected' : ''}>${esc(c.name)}${c.bed ? `（${esc(c.bed)}）` : ''}</option>`).join('');
 
-  function cropForm(crop, presetName) {
+  function cropForm(crop, presetName, spot) {
     const c = crop || { name: presetName || '', plantedOn: L.todayStr(), kind: '苗の植え付け' };
     if (!crop) c.harvestOn = L.suggestHarvestDate(c.name, c.plantedOn);
     openForm(crop ? '作物を編集' : '作物を追加', `
       <label>作物名<input name="name" required list="presets" value="${esc(c.name)}" autocomplete="off"></label>
       <datalist id="presets">${L.PRESETS.map((p) => `<option value="${esc(p.name)}">`).join('')}</datalist>
       <label>品種<input name="variety" value="${esc(c.variety)}"></label>
-      <label>場所・区画<input name="bed" value="${esc(c.bed)}" placeholder="例：畝A、プランター1"></label>
+      <label>場所・区画<input name="bed" value="${esc(c.bed)}" placeholder="畑の図でも指定できます"></label>
       <div class="cols">
         <label>方法<select name="kind">${['苗の植え付け', '種まき'].map((k) => `<option ${c.kind === k ? 'selected' : ''}>${k}</option>`).join('')}</select></label>
         <label>日付<input type="date" name="plantedOn" value="${esc(c.plantedOn)}"></label>
@@ -222,8 +256,14 @@
       ${crop ? `<label class="check"><input type="checkbox" name="ended" ${c.ended ? 'checked' : ''}> 栽培を終了した</label>` : ''}`,
     (d) => {
       const next = { ...d, ended: d.ended === 'on' };
-      if (crop) Object.assign(crop, next);
-      else state.crops.push({ id: uid(), ...next });
+      if (crop) {
+        // 終了したら図のマスを空ける。どこにあったかは場所欄に残す
+        if (next.ended && crop.spots.length) {
+          if (!next.bed) next.bed = L.cropLocation({ spots: crop.spots }, state.planters);
+          crop.spots = [];
+        }
+        Object.assign(crop, next);
+      } else state.crops.push({ id: uid(), spots: spot ? [spot] : [], ...next });
     },
     crop && (() => {
       state.crops = state.crops.filter((x) => x.id !== crop.id);
@@ -274,6 +314,70 @@
     task && (() => { state.tasks = state.tasks.filter((x) => x.id !== task.id); }));
   }
 
+  // ---------- 畑の図 ----------
+  function plantAt(key) {
+    const growing = state.crops.filter((c) => !c.ended);
+    if (!growing.length) return cropForm(null, '', key);
+    openForm(`${L.spotLabel(key, state.planters)} に植える`, `
+      <label>植えた作物<select name="cropId">
+        <option value="">新しい作物を登録する</option>
+        ${growing.map((c) => `<option value="${c.id}">${esc(c.name)}${c.variety ? `（${esc(c.variety)}）` : ''} を広げる</option>`).join('')}
+      </select></label>
+      <p class="hint">すでに登録した作物が複数のマスにまたがるときは「広げる」を選びます。</p>`,
+    (d) => {
+      const crop = state.crops.find((c) => c.id === d.cropId);
+      if (crop) crop.spots.push(key);
+      else setTimeout(() => cropForm(null, '', key)); // このダイアログが閉じてから開く
+    });
+  }
+  function spotDetail(c, key) {
+    const today = L.todayStr();
+    const left = c.harvestOn ? L.daysBetween(today, c.harvestOn) : null;
+    const water = L.lastLogDate(state.logs, c.id, '水やり');
+    const meta = [
+      c.plantedOn && `${esc(c.kind || '植え付け')} ${fmtDate(c.plantedOn)}（${L.daysBetween(c.plantedOn, today)}日目）`,
+      left !== null && (left > 0 ? `収穫目安まで${left}日` : '収穫期'),
+      water && `水やり ${fmtDate(water)}`,
+    ].filter(Boolean).join(' ・ ');
+    openForm(`${c.name}${c.variety ? `（${c.variety}）` : ''}`, `
+      <p class="meta">${esc(L.spotLabel(key, state.planters))}${meta ? ` ・ ${meta}` : ''}</p>
+      ${c.note ? `<p class="note">${esc(c.note)}</p>` : ''}
+      <div class="actions">
+        <button type="button" class="btn small" data-act="quick-water" data-id="${c.id}">水やり</button>
+        <button type="button" class="btn small" data-act="log-new" data-crop="${c.id}">記録する</button>
+        <button type="button" class="btn small" data-act="crop-edit" data-id="${c.id}">編集</button>
+        <button type="button" class="btn small danger" data-act="unspot" data-id="${c.id}" data-key="${key}">ここから外す</button>
+      </div>`, null);
+  }
+  function gardenForm() {
+    const g = state.garden;
+    openForm('畑の大きさ', `
+      <div class="cols">
+        <label>たて（マス）<input type="number" name="rows" min="1" max="10" required value="${g.rows}"></label>
+        <label>よこ（マス）<input type="number" name="cols" min="1" max="10" required value="${g.cols}"></label>
+      </div>
+      <p class="hint">小さくすると、はみ出たマスの記録は外れます（作物そのものは残ります）。</p>`,
+    (d) => {
+      state.garden = { rows: Number(d.rows), cols: Number(d.cols) };
+      L.clipSpots(state.crops, state.garden.rows, state.garden.cols);
+    });
+  }
+  function planterForm(planter) {
+    const p = planter || { name: `プランター${state.planters.length + 1}`, side: 'bottom' };
+    openForm(planter ? 'プランターを編集' : 'プランターを置く', `
+      <label>名前<input name="name" required value="${esc(p.name)}"></label>
+      <label>置く位置<select name="side">${Object.entries(SIDES).map(([v, t]) => `<option value="${v}" ${p.side === v ? 'selected' : ''}>畑の${t}</option>`).join('')}</select></label>`,
+    (d) => {
+      if (planter) Object.assign(planter, d);
+      else state.planters.push({ id: uid(), ...d });
+    },
+    planter && (() => {
+      const key = L.planterKey(planter.id);
+      state.planters = state.planters.filter((x) => x.id !== planter.id);
+      state.crops.forEach((c) => { c.spots = c.spots.filter((k) => k !== key); });
+    }));
+  }
+
   // ---------- データの書き出し・読み込み ----------
   function exportData() {
     const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
@@ -291,7 +395,7 @@
     try { data = JSON.parse(await file.text()); } catch (err) { data = null; }
     if (!L.isValidState(data)) return alert('このファイルは読み込めません（形式が違います）。');
     if (!confirm('今のデータを、読み込んだ内容で置き換えます。よろしいですか？')) return;
-    state = { crops: data.crops, logs: data.logs, tasks: data.tasks };
+    state = L.normalizeState(data);
     commit();
   });
 
@@ -312,12 +416,28 @@
       t.done = !t.done;
       commit();
     },
+    spot: (el) => {
+      const c = L.occupancy(state.crops).get(el.dataset.key);
+      if (c) spotDetail(c, el.dataset.key);
+      else plantAt(el.dataset.key);
+    },
+    unspot: (el) => {
+      const c = state.crops.find((x) => x.id === el.dataset.id);
+      c.spots = c.spots.filter((k) => k !== el.dataset.key);
+      commit();
+    },
+    'garden-size': gardenForm,
+    'planter-new': () => planterForm(),
+    'planter-edit': (el) => planterForm(state.planters.find((p) => p.id === el.dataset.id)),
     export: exportData,
     import: () => $('#import-file').click(),
   };
-  $('#view').addEventListener('click', (e) => {
+  // ダイアログ内のボタンも同じ操作を使うので、ページ全体で受ける
+  document.addEventListener('click', (e) => {
     const el = e.target.closest('[data-act]');
-    if (el && ACTIONS[el.dataset.act]) ACTIONS[el.dataset.act](el);
+    if (!el || !ACTIONS[el.dataset.act]) return;
+    if (el.closest('dialog')) dlg.close();
+    ACTIONS[el.dataset.act](el);
   });
   $('#view').addEventListener('change', (e) => {
     const act = e.target.dataset.act;

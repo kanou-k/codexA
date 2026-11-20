@@ -77,3 +77,29 @@ test('読み込みデータの検証', () => {
   assert.equal(L.isValidState({ crops: [] }), false);
   assert.equal(L.isValidState(null), false);
 });
+
+test('畑の図：場所と作物の対応', () => {
+  const planters = [{ id: 'p1', name: 'プランター1', side: 'right' }];
+  const crops = [
+    { id: 'a', name: 'トマト', spots: ['f:0:0', 'f:0:1', 'p:p1'] },
+    { id: 'b', name: 'ナス', spots: ['f:1:0'], ended: true },
+    { id: 'c', name: 'カブ', bed: '東側', spots: ['f:3:5', 'f:0:2', 'f:1:1', 'f:1:2', 'f:1:3'] },
+  ];
+  const occ = L.occupancy(crops);
+  assert.equal(occ.get('f:0:1').name, 'トマト');
+  assert.equal(occ.get('p:p1').name, 'トマト');
+  assert.equal(occ.has('f:1:0'), false); // 終了した作物は空き扱い
+  assert.equal(L.cropLocation(crops[0], planters), '畑1-1・畑1-2・プランター1');
+  assert.equal(L.cropLocation(crops[2], planters), '東側 / 畑4-6・畑1-3・畑2-2 ほか2か所');
+  L.clipSpots(crops, 2, 3);
+  assert.deepEqual(crops[2].spots, ['f:0:2', 'f:1:1', 'f:1:2']);
+  assert.deepEqual(crops[0].spots, ['f:0:0', 'f:0:1', 'p:p1']);
+});
+
+test('古いデータに畑の項目を補う', () => {
+  const s = L.normalizeState({ crops: [{ id: 'a', name: 'x' }], logs: [], tasks: [] });
+  assert.deepEqual(s.garden, { rows: 4, cols: 6 });
+  assert.deepEqual(s.planters, []);
+  assert.deepEqual(s.crops[0].spots, []);
+  assert.deepEqual(L.normalizeState({ crops: [], logs: [], tasks: [], garden: { rows: 99, cols: 3 } }).garden, { rows: 4, cols: 3 });
+});

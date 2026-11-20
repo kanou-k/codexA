@@ -114,7 +114,60 @@
     return !!s && ['crops', 'logs', 'tasks'].every((k) => Array.isArray(s[k]));
   }
 
+  // ---- 畑の図 ----
+  // 場所キー：畑のマスは "f:行:列"、プランターは "p:プランターID"
+  const fieldKey = (r, c) => `f:${r}:${c}`;
+  const planterKey = (id) => `p:${id}`;
+  // 場所キー → そこに植わっている栽培中の作物
+  function occupancy(crops) {
+    const map = new Map();
+    for (const c of crops) {
+      if (c.ended) continue;
+      for (const k of c.spots || []) map.set(k, c);
+    }
+    return map;
+  }
+  function spotLabel(key, planters) {
+    if (key.startsWith('p:')) {
+      const p = planters.find((x) => planterKey(x.id) === key);
+      return p ? p.name : '';
+    }
+    const [, r, c] = key.split(':');
+    return `畑${Number(r) + 1}-${Number(c) + 1}`;
+  }
+  function cropLocation(crop, planters) {
+    const labels = (crop.spots || []).map((k) => spotLabel(k, planters)).filter(Boolean);
+    const parts = [];
+    if (crop.bed) parts.push(crop.bed);
+    if (labels.length > 3) parts.push(`${labels.slice(0, 3).join('・')} ほか${labels.length - 3}か所`);
+    else if (labels.length) parts.push(labels.join('・'));
+    return parts.join(' / ');
+  }
+  // 畑を小さくしたとき、はみ出たマスの記録を外す
+  function clipSpots(crops, rows, cols) {
+    for (const c of crops) {
+      c.spots = (c.spots || []).filter((k) => {
+        if (!k.startsWith('f:')) return true;
+        const [, r, col] = k.split(':').map(Number);
+        return r < rows && col < cols;
+      });
+    }
+  }
+  // 古い形式のデータにも畑・プランターの項目を補う
+  function normalizeState(s) {
+    const g = s.garden || {};
+    const size = (v, d) => (Number.isInteger(v) && v >= 1 && v <= 10 ? v : d);
+    return {
+      crops: s.crops.map((c) => ({ ...c, spots: Array.isArray(c.spots) ? c.spots : [] })),
+      logs: s.logs,
+      tasks: s.tasks,
+      garden: { rows: size(g.rows, 4), cols: size(g.cols, 6) },
+      planters: Array.isArray(s.planters) ? s.planters : [],
+    };
+  }
+
   return {
+    fieldKey, planterKey, occupancy, spotLabel, cropLocation, clipSpots, normalizeState,
     PRESETS, LOG_TYPES, todayStr, addDays, daysBetween, findPreset, suggestHarvestDate,
     plantableIn, lastLogDate, harvestTotals, formatGrams, todoItems, isValidState,
   };
