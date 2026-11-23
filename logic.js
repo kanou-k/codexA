@@ -161,13 +161,70 @@
       crops: s.crops.map((c) => ({ ...c, spots: Array.isArray(c.spots) ? c.spots : [] })),
       logs: s.logs,
       tasks: s.tasks,
-      garden: { rows: size(g.rows, 4), cols: size(g.cols, 6) },
+      garden: { rows: size(g.rows, 4), cols: size(g.cols, 6), u: g.u || 0 },
       planters: Array.isArray(s.planters) ? s.planters : [],
+      deleted: s.deleted && typeof s.deleted === 'object' ? s.deleted : {},
     };
   }
 
+  // ---- 端末間の同期 ----
+  // 各レコードに更新時刻 u を付け、削除は deleted[id] = 時刻 として残す。
+  // 端末どうしはレコード単位で新しい方を採るので、別々の端末での編集が互いを消さない。
+  const COLLECTIONS = ['crops', 'logs', 'tasks', 'planters'];
+  const sansU = (rec) => JSON.stringify({ ...rec, u: 0 });
+
+  // prev（前回保存時点）と比べて、変わったレコードに時刻を付け、消えたレコードを deleted に記録する
+  function stampChanges(prev, next, now) {
+    next.deleted = { ...prev.deleted, ...next.deleted };
+    for (const col of COLLECTIONS) {
+      const before = new Map(prev[col].map((r) => [r.id, r]));
+      for (const rec of next[col]) {
+        const old = before.get(rec.id);
+        if (!old) rec.createdAt = rec.createdAt || now;
+        if (!old || sansU(old) !== sansU(rec)) rec.u = now;
+        before.delete(rec.id);
+      }
+      for (const id of before.keys()) next.deleted[id] = now;
+    }
+    if (prev.garden.rows !== next.garden.rows || prev.garden.cols !== next.garden.cols) next.garden.u = now;
+    return next;
+  }
+  // 同じ更新時刻のときも両端末で同じ結果になるよう、内容の文字列比較で決める
+  const newer = (a, b) => {
+    const ua = a.u || 0, ub = b.u || 0;
+    return ua !== ub ? ua > ub : JSON.stringify(a) > JSON.stringify(b);
+  };
+  function mergeStates(a, b) {
+    const deleted = { ...a.deleted };
+    for (const [id, t] of Object.entries(b.deleted)) deleted[id] = Math.max(deleted[id] || 0, t);
+    const out = { deleted };
+    for (const col of COLLECTIONS) {
+      const byId = new Map();
+      for (const rec of [...a[col], ...b[col]]) {
+        const cur = byId.get(rec.id);
+        if (!cur || newer(rec, cur)) byId.set(rec.id, rec);
+      }
+      out[col] = [...byId.values()]
+        .filter((r) => !(r.id in deleted) || deleted[r.id] < (r.u || 0))
+        .sort((x, y) => (x.createdAt || 0) - (y.createdAt || 0) || (x.id < y.id ? -1 : 1));
+    }
+    out.garden = newer(b.garden, a.garden) ? b.garden : a.garden;
+    return normalizeState(out);
+  }
+  // 同期先は Firebase Realtime Database だけを許可する（リンク経由で他所へ送らせない）
+  function validDbUrl(input) {
+    try {
+      const u = new URL(String(input).trim());
+      const ok = /^[a-z0-9-]+\.firebaseio\.com$|^[a-z0-9-]+\.[a-z0-9-]+\.firebasedatabase\.app$/.test(u.hostname);
+      return u.protocol === 'https:' && ok ? u.origin : '';
+    } catch (e) {
+      return '';
+    }
+  }
+  const validShareCode = (code) => /^[A-Za-z0-9_-]{16,64}$/.test(code || '');
+
   return {
-    fieldKey, planterKey, occupancy, spotLabel, cropLocation, clipSpots, normalizeState,
+    fieldKey, planterKey, occupancy, spotLabel, cropLocation, clipSpots, normalizeState, stampChanges, mergeStates, validDbUrl, validShareCode,
     PRESETS, LOG_TYPES, todayStr, addDays, daysBetween, findPreset, suggestHarvestDate,
     plantableIn, lastLogDate, harvestTotals, formatGrams, todoItems, isValidState,
   };

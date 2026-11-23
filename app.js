@@ -26,7 +26,119 @@
       alert('保存できませんでした。ブラウザの保存領域を確認してください。');
     }
   }
-  function commit() { save(); render(); }
+  const clone = (s) => JSON.parse(JSON.stringify(s));
+  let baseline = clone(state); // 前回保存時点。変更箇所の検出に使う
+  function commit() {
+    L.stampChanges(baseline, state, Date.now());
+    baseline = clone(state);
+    save();
+    render();
+    scheduleSync(1000);
+  }
+
+  // ---------- 端末間の同期（Firebase Realtime Database） ----------
+  const SYNC_KEY = 'saien-sync';
+  let sync = null; // { url, code }
+  try {
+    const s = JSON.parse(localStorage.getItem(SYNC_KEY));
+    if (s && L.validDbUrl(s.url) && L.validShareCode(s.code)) sync = s;
+  } catch (e) { /* 設定なしとして扱う */ }
+  let syncing = false;
+  let syncAgain = false;
+  let syncTimer = 0;
+  let syncNote = '';
+  function setSyncNote(text, isError) {
+    syncNote = text;
+    const el = $('#sync-status');
+    el.textContent = text;
+    el.classList.toggle('error', !!isError);
+    const inView = $('#sync-note');
+    if (inView) inView.textContent = text;
+  }
+  function scheduleSync(ms) {
+    if (!sync) return;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(syncNow, ms);
+  }
+  async function syncNow() {
+    if (!sync) return;
+    if (syncing) { syncAgain = true; return; }
+    if (dlg.open) return scheduleSync(5000); // 入力中は画面を書き換えない
+    syncing = true;
+    setSyncNote('同期中…');
+    const endpoint = `${sync.url}/gardens/${sync.code}.json`;
+    try {
+      const res = await fetch(endpoint, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = await res.json();
+      let remote = null;
+      if (body && typeof body.data === 'string') {
+        const parsed = JSON.parse(body.data);
+        if (L.isValidState(parsed)) remote = L.normalizeState(parsed);
+      }
+      if (dlg.open) { scheduleSync(5000); return; }
+      // ここから送信開始までは同期処理なので、途中で state が変わることはない
+      const merged = remote ? L.mergeStates(state, remote) : state;
+      if (JSON.stringify(merged) !== JSON.stringify(state)) {
+        state = merged;
+        baseline = clone(state);
+        save();
+        render();
+      }
+      if (!remote || JSON.stringify(merged) !== JSON.stringify(remote)) {
+        const put = await fetch(endpoint, { method: 'PUT', body: JSON.stringify({ data: JSON.stringify(merged), u: Date.now() }) });
+        if (!put.ok) throw new Error(`HTTP ${put.status}`);
+      }
+      const t = new Date();
+      setSyncNote(`同期済み ${t.getHours()}:${String(t.getMinutes()).padStart(2, '0')}`);
+    } catch (e) {
+      const denied = /HTTP 40[13]/.test(e.message);
+      setSyncNote(denied ? '同期できません（Firebaseのルール設定を確認）' : navigator.onLine === false ? 'オフライン（つながったら同期します）' : `同期できません（${e.message}）`, true);
+    } finally {
+      syncing = false;
+      if (syncAgain) { syncAgain = false; scheduleSync(500); }
+    }
+  }
+  function setSync(next) {
+    sync = next;
+    try {
+      if (sync) localStorage.setItem(SYNC_KEY, JSON.stringify(sync));
+      else localStorage.removeItem(SYNC_KEY);
+    } catch (e) { /* 保存できなくてもこの回は動く */ }
+    setSyncNote('');
+    render();
+    if (sync) syncNow();
+  }
+  const newShareCode = () => {
+    const chars = 'abcdefghijkmnpqrstuvwxyz23456789';
+    return [...crypto.getRandomValues(new Uint8Array(24))].map((b) => chars[b % chars.length]).join('');
+  };
+  const shareLink = () => `${location.href.split('#')[0]}#${new URLSearchParams({ db: sync.url, code: sync.code })}`;
+  function syncForm() {
+    openForm('端末間の共有を設定', `
+      <label>FirebaseのデータベースURL<input name="url" required inputmode="url" placeholder="https://〇〇-default-rtdb.firebaseio.com"></label>
+      <label>合言葉<input name="code" required minlength="16" maxlength="64" pattern="[A-Za-z0-9_\\-]+" value="${newShareCode()}" autocomplete="off"></label>
+      <p class="hint">合言葉を知っている端末だけがデータを読み書きできます。1台目は自動で作られたものをそのまま使い、2台目以降は1台目の「共有リンク」を開くと入力なしで参加できます。</p>`,
+    (d) => {
+      const url = L.validDbUrl(d.url);
+      if (!url || !L.validShareCode(d.code)) {
+        setTimeout(() => alert(url ? '合言葉は半角英数字16文字以上にしてください。' : 'FirebaseのデータベースURLを確認してください。'));
+        return;
+      }
+      setTimeout(() => setSync({ url, code: d.code }));
+    });
+  }
+  // 共有リンク（#db=…&code=…）から開いたときは、確認のうえ共有に参加する
+  function joinFromLink() {
+    if (!location.hash.includes('code=')) return;
+    const p = new URLSearchParams(location.hash.slice(1));
+    const url = L.validDbUrl(p.get('db'));
+    const code = p.get('code');
+    history.replaceState(null, '', location.href.split('#')[0]);
+    if (!url || !L.validShareCode(code)) return alert('共有リンクが正しくありません。');
+    if (sync && sync.url === url && sync.code === code) return;
+    if (confirm(`この端末を菜園データの共有に参加させますか？\n同期先：${url}\nこの端末にあるデータは、共有先のデータと合わせて残ります。`)) setSync({ url, code });
+  }
 
   const cropName = (id) => state.crops.find((c) => c.id === id)?.name || '';
   const empty = (msg) => `<p class="empty">${msg}</p>`;
@@ -185,6 +297,20 @@
             <span class="bar"><i style="width:${Math.max(2, (r.grams / max) * 100)}%"></i></span>
             <span class="bar-val">${esc(L.formatGrams(r.grams))}<small> / ${r.count}回</small></span></li>`).join('')}</ul>`
           : empty('今年の収穫記録はまだありません。')}
+      </section>
+      <section>
+        <h2>端末間の共有</h2>
+        ${sync ? `
+          <p class="hint">共有中：<span id="sync-note">${esc(syncNote)}</span></p>
+          <div class="actions">
+            <button class="btn primary" data-act="sync-link">共有リンクをコピー</button>
+            <button class="btn" data-act="sync-now">今すぐ同期</button>
+            <button class="btn danger" data-act="sync-off">共有をやめる</button>
+          </div>
+          <p class="hint">共有リンクを他の端末で開くと、同じデータを使えます。リンクは合言葉を含むので、共有したい相手だけに渡してください。</p>`
+        : `
+          <p class="hint">スマホとパソコン、家族の端末などで同じデータを使えます。Firebase（無料枠）の準備が必要です。手順は README の「端末間の共有」を見てください。</p>
+          <div class="actions"><button class="btn" data-act="sync-setup">共有を設定する</button></div>`}
       </section>
       <section>
         <h2>データ</h2>
@@ -429,6 +555,19 @@
     'garden-size': gardenForm,
     'planter-new': () => planterForm(),
     'planter-edit': (el) => planterForm(state.planters.find((p) => p.id === el.dataset.id)),
+    'sync-setup': syncForm,
+    'sync-now': syncNow,
+    'sync-off': () => {
+      if (confirm('この端末での共有をやめますか？\nこの端末のデータも、共有先のデータもそのまま残ります。')) setSync(null);
+    },
+    'sync-link': async () => {
+      try {
+        await navigator.clipboard.writeText(shareLink());
+        alert('共有リンクをコピーしました。他の端末で開いてください。');
+      } catch (e) {
+        prompt('このリンクをコピーして、他の端末で開いてください。', shareLink());
+      }
+    },
     export: exportData,
     import: () => $('#import-file').click(),
   };
@@ -453,4 +592,10 @@
   });
 
   render();
+  joinFromLink();
+  syncNow();
+  // 開いている間は定期的に、戻ってきたときはすぐに他の端末の変更を取り込む
+  setInterval(() => { if (document.visibilityState === 'visible') syncNow(); }, 30000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncNow(); });
+  window.addEventListener('online', syncNow);
 })();
