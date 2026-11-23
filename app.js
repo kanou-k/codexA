@@ -591,6 +591,11 @@
     window.scrollTo(0, 0);
   });
 
+  // ホーム画面に追加して、オフラインでも開けるようにする（ファイルを直接開いた場合は使えない）
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+
   render();
   joinFromLink();
   syncNow();
